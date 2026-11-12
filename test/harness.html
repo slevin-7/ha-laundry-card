@@ -1,0 +1,38 @@
+<!-- test/harness.html — Karte mit echtem Zustandsabzug (states.json) und gefälschtem callService -->
+<!doctype html><meta charset="utf-8"><title>waschkueche-card harness</title>
+<style>
+  body{margin:0;padding:16px;font-family:Roboto,system-ui,sans-serif;background:var(--bg)}
+  body.light{--bg:#fafafa;--card-background-color:#fff;--secondary-background-color:#f2f3f5;--primary-text-color:#212121;--secondary-text-color:#5f6368;--divider-color:#e0e0e0;--primary-color:#03a9f4}
+  body.dark{--bg:#111315;--card-background-color:#1A1D21;--secondary-background-color:#23272C;--primary-text-color:#ECEEF0;--secondary-text-color:#A3ABB5;--divider-color:#33383F;--primary-color:#03a9f4}
+  .wrap{max-width:420px}
+</style>
+<body class="dark"><div class="wrap"><waschkueche-card id="card"></waschkueche-card></div>
+<script type="module">
+  import '../dist/waschkueche-card.js';
+  const states = await (await fetch('./states.json')).json();
+  const params = new URLSearchParams(location.search);
+  if (params.get('theme') === 'light') document.body.className = 'light';
+  const scen = params.get('s') || 'setup';
+  const set = (id, state, attrs) => { states[id] = { state, attributes: { ...(states[id]?.attributes || {}), ...(attrs || {}) } }; };
+  set('input_boolean.waschmaschine_auszuraumen', 'off'); set('input_boolean.trockner_auszuraumen', 'off');
+  set('binary_sensor.waschmaschine_fernsteuerung', 'on'); set('binary_sensor.trockner_gerateverbindung', 'on');
+  if (scen === 'run') {
+    set('sensor.waschmaschine_machine_status', 'running'); set('sensor.waschmaschine_phase', 'washing');
+    set('sensor.waschmaschine_fortschritt', '62'); set('sensor.waschmaschine_verbleibende_zeit', '72'); set('sensor.waschmaschine_fertig_um', '14:35');
+    set('select.waschmaschine_programm', 'hqd_eco_40_60_degrees'); set('select.waschmaschine_temperatur', '40');
+    set('switch.waschmaschine_anhalten', 'off'); set('switch.waschmaschine_waschmaschine', 'on');
+  }
+  if (scen === 'done') set('input_boolean.trockner_auszuraumen', 'on');
+  if (scen === 'remoteoff') set('binary_sensor.trockner_gerateverbindung', 'off');
+  window.calls = [];
+  const card = document.getElementById('card');
+  const push = () => { card.hass = { states: { ...states }, themes: { darkMode: document.body.className === 'dark' }, callService: async (dom, svc, data) => {
+    window.calls.push(`${dom}.${svc} ${JSON.stringify(data)}`);
+    if (dom === 'select') { set(data.entity_id, data.option); push(); }
+    if (dom === 'number') { set(data.entity_id, String(data.value)); push(); }
+    if (dom === 'input_boolean') { set(data.entity_id, 'off'); push(); }
+  } }; };
+  card.setConfig({});
+  push();
+  window.card = card;
+</script>
