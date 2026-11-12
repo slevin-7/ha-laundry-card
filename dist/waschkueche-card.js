@@ -1,7 +1,7 @@
 // waschkueche-card.js — Bedienung für Waschmaschine und Trockner auf Basis der hOn-Integration.
 // Liest und schreibt nur vorhandene Entitäten (select/number/switch/script/input_boolean), keine eigene Cloud-Logik.
 
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 
 // Entitäten je Gerät; {p} = Präfix aus der Konfiguration (z. B. "waschmaschine").
 const ENTITIES = {
@@ -12,6 +12,7 @@ const ENTITIES = {
     remain: 'sensor.{p}_verbleibende_zeit', progress: 'sensor.{p}_fortschritt', finish: 'sensor.{p}_fertig_um',
     run: 'sensor.{p}_lauf', error: 'sensor.{p}_fehler', remote: 'binary_sensor.{p}_fernsteuerung',
     empty: 'input_boolean.{p}_auszuraumen', pause: 'switch.{p}_anhalten', power: 'switch.{p}_{p}',
+    fresh: 'switch.{p}_keep_fresh',
   },
   dryer: {
     program: 'select.{p}_programm', level: 'select.{p}_trocknungsstufe', heat: 'number.{p}_temperature_level',
@@ -20,6 +21,7 @@ const ENTITIES = {
     remain: 'sensor.{p}_verbleibende_zeit', progress: 'sensor.{p}_fortschritt', finish: 'sensor.{p}_fertig_um',
     run: 'sensor.{p}_lauf', error: 'sensor.{p}_fehler', remote: 'binary_sensor.{p}_gerateverbindung',
     empty: 'input_boolean.{p}_auszuraumen', pause: 'switch.{p}_anhalten', power: 'switch.{p}_{p}',
+    fresh: 'switch.{p}_keep_fresh',
   },
 };
 
@@ -338,6 +340,8 @@ class WaschkuecheCard extends HTMLElement {
          this._selectRow(d.e.spin, 'Schleudern', v => (v === '0' ? 'Aus' : v))]
       : [this._selectRow(d.e.level, 'Trocken', v => LEVELS[v] || programLabel(v)),
          this._numberRow(d.e.heat, 'Wärme', v => HEAT[v] || String(v))];
+    if (this._ok(d.e.fresh)) rows.push({ id: d.e.fresh, title: 'Frischhalten', action: 'switch',
+      opts: ['off', 'on'].map(v => ({ v, label: v === 'on' ? 'An' : 'Aus', on: this._val(d.e.fresh) === v })) });
     const remoteOk = this._val(d.e.remote) !== 'off';
     const checking = this._ui.checking;
     const pending = !!this._ui.pending[d.kind] || checking;
@@ -429,7 +433,7 @@ class WaschkuecheCard extends HTMLElement {
     if (!this._config.remote_check || this._ui.checking) return this._val(d.e.remote) !== 'off';
     if (!force && Date.now() - (this._lastCheck || 0) < 60000) return this._val(d.e.remote) !== 'off';
     this._lastCheck = Date.now();
-    const keys = ['program', 'temp', 'spin', 'level', 'heat'];
+    const keys = ['program', 'temp', 'spin', 'level', 'heat', 'fresh'];
     const snap = this._devs.map(x => ({ x, v: Object.fromEntries(keys.filter(k => this._ok(x.e[k])).map(k => [k, this._val(x.e[k])])) }));
     const before = this._st(d.e.remote)?.last_updated;
     this._ui.checking = true; this._key = null; this._render();
@@ -439,7 +443,8 @@ class WaschkuecheCard extends HTMLElement {
         await new Promise(r => setTimeout(r, 500));
       for (const { x, v } of snap) for (const k of keys) {
         if (v[k] === undefined || this._val(x.e[k]) === v[k]) continue;
-        if (k === 'heat') await this._hass.callService('number', 'set_value', { entity_id: x.e[k], value: +v[k] });
+        if (k === 'fresh') await this._hass.callService('switch', `turn_${v[k]}`, { entity_id: x.e[k] });
+        else if (k === 'heat') await this._hass.callService('number', 'set_value', { entity_id: x.e[k], value: +v[k] });
         else await this._hass.callService('select', 'select_option', { entity_id: x.e[k], option: v[k] });
       }
     } catch (err) {
@@ -466,6 +471,7 @@ class WaschkuecheCard extends HTMLElement {
           && id === d.e.program && this._val(d.e.remote) === 'off') await this._refreshRemote(d);
         break;
       case 'recheck': await this._refreshRemote(d, true); break;
+      case 'switch': await this._call('switch', `turn_${v}`, { entity_id: id }); break;
       case 'number': await this._call('number', 'set_value', { entity_id: id, value: +v }); break;
       case 'start': {
         if (this._val(d.e.remote) === 'off' && !(await this._refreshRemote(d, true))) {
