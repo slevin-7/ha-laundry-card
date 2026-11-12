@@ -21,7 +21,7 @@ const page = await browser.newPage({ viewport: { width: 452, height: 1100 }, dev
 const errors = [];
 page.on('pageerror', e => errors.push(String(e)));
 page.on('console', m => { if (m.type() === 'error' && !m.text().includes('404')) errors.push(m.text()); });
-await page.goto(`http://localhost:${port}/test/harness.html?s=${scen}&theme=${theme}`);
+await page.goto(`http://localhost:${port}/test/harness.html?s=${scen}&theme=${theme}${process.env.EXTRA || ""}`);
 await page.waitForTimeout(600);
 if (js) { await page.evaluate(`(async () => { ${js} })()`); await page.waitForTimeout(400); }
 const out = path.join(root, 'test', `shot_${scen}_${theme}.png`);

@@ -20,6 +20,7 @@ dryer_name: Trockner
 favorites_washer: [hqd_eco_40_60_degrees, hqd_cottons, hqd_mix, hqd_quick_15, hqd_synthetic_and_coloured, hqd_smart]
 favorites_dryer: [hqd_cotton, hqd_mix, hqd_synthetics, hqd_quick_30, hqd_towel, hqd_bed_sheets]
 delays: [0, 60, 180, 360]    # start delay choices in minutes (device uses 30-minute steps)
+remote_check: true           # if "remote start" reads off, reload the hOn entry and restore the picked options (hOn only reads it on load)
 washer_entities: {}          # override single entities, e.g. { start: script.my_washer_start }
 dryer_entities: {}
 ```

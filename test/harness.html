@@ -13,7 +13,7 @@
   const params = new URLSearchParams(location.search);
   if (params.get('theme') === 'light') document.body.className = 'light';
   const scen = params.get('s') || 'setup';
-  const set = (id, state, attrs) => { states[id] = { state, attributes: { ...(states[id]?.attributes || {}), ...(attrs || {}) } }; };
+  const set = (id, state, attrs) => { states[id] = { state, last_updated: new Date().toISOString() + Math.random(), attributes: { ...(states[id]?.attributes || {}), ...(attrs || {}) } }; };
   set('input_boolean.waschmaschine_auszuraumen', 'off'); set('input_boolean.trockner_auszuraumen', 'off');
   set('binary_sensor.waschmaschine_fernsteuerung', 'on'); set('binary_sensor.trockner_gerateverbindung', 'on');
   if (scen === 'run') {
@@ -31,6 +31,11 @@
     if (dom === 'select') { set(data.entity_id, data.option); push(); }
     if (dom === 'number') { set(data.entity_id, String(data.value)); push(); }
     if (dom === 'input_boolean') { set(data.entity_id, 'off'); push(); }
+    if (dom === 'homeassistant' && svc === 'reload_config_entry') {
+      // Reload: Optionen springen auf Gerätestand, Fernstart wird neu gelesen (an, außer ?stayoff)
+      setTimeout(() => { set('select.trockner_programm', 'hqd_cotton'); set('select.waschmaschine_programm', 'hqd_smart');
+        set('binary_sensor.trockner_gerateverbindung', params.has('stayoff') ? 'off' : 'on'); push(); }, 800);
+    }
   } }; };
   card.setConfig({});
   push();

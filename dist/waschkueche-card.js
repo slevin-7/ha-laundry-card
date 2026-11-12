@@ -1,7 +1,7 @@
 // waschkueche-card.js — Bedienung für Waschmaschine und Trockner auf Basis der hOn-Integration.
 // Liest und schreibt nur vorhandene Entitäten (select/number/switch/script/input_boolean), keine eigene Cloud-Logik.
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 
 // Entitäten je Gerät; {p} = Präfix aus der Konfiguration (z. B. "waschmaschine").
 const ENTITIES = {
@@ -29,6 +29,7 @@ const DEFAULTS = {
   favorites_washer: ['hqd_eco_40_60_degrees', 'hqd_cottons', 'hqd_mix', 'hqd_quick_15', 'hqd_synthetic_and_coloured', 'hqd_smart'],
   favorites_dryer: ['hqd_cotton', 'hqd_mix', 'hqd_synthetics', 'hqd_quick_30', 'hqd_towel', 'hqd_bed_sheets'],
   delays: [0, 60, 180, 360], // Minuten; das Gerät nimmt 30-Minuten-Schritte
+  remote_check: true, // Fernstart "aus" ist bei hOn oft veraltet: dann Integration neu laden und Auswahl wiederherstellen
   washer_entities: {}, dryer_entities: {},
 };
 
@@ -172,7 +173,7 @@ class WaschkuecheCard extends HTMLElement {
       this._devs.push({ kind, e: map, name: this._config[`${kind}_name`], favs: this._config[`favorites_${kind}`] || [] });
     }
     if (!this._devs.length) throw new Error('waschkueche-card: weder washer noch dryer konfiguriert');
-    this._ui = this._ui || { sel: this._devs[0].kind, all: false, q: '', delay: 0, pending: {}, confirmStop: false, toast: '' };
+    this._ui = this._ui || { sel: this._devs[0].kind, all: false, q: '', delay: 0, pending: {}, confirmStop: false, toast: '', checking: false };
     if (!this._devs.some(d => d.kind === this._ui.sel)) this._ui.sel = this._devs[0].kind;
     this._key = null;
     this._render();
@@ -338,7 +339,8 @@ class WaschkuecheCard extends HTMLElement {
       : [this._selectRow(d.e.level, 'Trocken', v => LEVELS[v] || programLabel(v)),
          this._numberRow(d.e.heat, 'Wärme', v => HEAT[v] || String(v))];
     const remoteOk = this._val(d.e.remote) !== 'off';
-    const pending = !!this._ui.pending[d.kind];
+    const checking = this._ui.checking;
+    const pending = !!this._ui.pending[d.kind] || checking;
     const dur = this._remain(d);
     const hasDelay = this._ok(d.e.delay);
     const delay = hasDelay ? this._ui.delay : 0;
@@ -355,9 +357,10 @@ class WaschkuecheCard extends HTMLElement {
       ${this._seg(rows.filter(Boolean))}
       ${hasDelay && this._config.delays.length > 1 ? this._seg([{ id: '', title: 'Start', action: 'delay',
         opts: this._config.delays.map(m => ({ v: m, label: m ? `in ${fmtDuration(m)}` : 'Jetzt', on: m === delay })) }]) : ''}
-      ${remoteOk ? '' : `<p class="hint">${hint}</p>`}
+      ${checking ? '<p class="hint">Prüfe Fernstart …</p>'
+        : remoteOk ? '' : `<p class="hint">${hint}${this._config.remote_check ? ' <button class="link" data-a="recheck" style="padding: 0; text-decoration: underline; color: inherit">Erneut prüfen</button>' : ''}</p>`}
       <div style="display: flex; flex-direction: column; gap: 8px">
-        <button class="go" data-a="start" ${!remoteOk || pending ? 'disabled' : ''}>${pending ? 'Wird gestartet …' : `${esc(d.name)} ${delay ? 'planen' : 'starten'}`}</button>
+        <button class="go" data-a="start" ${pending || (!remoteOk && !this._config.remote_check) ? 'disabled' : ''}>${checking ? 'Prüfe …' : pending ? 'Wird gestartet …' : `${esc(d.name)} ${delay ? 'planen' : 'starten'}`}</button>
         ${info ? `<span class="muted" style="text-align: center">${esc(info)}</span>` : ''}
       </div></div>`;
   }
@@ -388,7 +391,9 @@ class WaschkuecheCard extends HTMLElement {
 
   _panelDone(d) {
     const end = this._st(d.e.run)?.attributes?.ende;
-    const since = end && !isNaN(new Date(end)) ? `Fertig seit ${hhmm(new Date(end))}.` : '';
+    const e = end && new Date(end);
+    const today = e && e.toDateString() === new Date().toDateString();
+    const since = e && !isNaN(e) ? `Fertig seit ${today ? '' : e.toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'numeric' }) + ', '}${hhmm(e)}.` : '';
     return `<div class="panel"><span class="title2">Fertig – bitte ausräumen</span>
       ${since ? `<span class="muted">${esc(since)}</span>` : ''}
       <button class="go" data-a="emptied">Ausgeräumt</button></div>`;
@@ -418,6 +423,33 @@ class WaschkuecheCard extends HTMLElement {
     this._toastT = setTimeout(() => { this._ui.toast = ''; this._key = null; this._render(); }, 5000);
   }
 
+  // Fernstart neu einlesen: hOn liest die Freigabe nur beim Laden der Integration. Ein Reload verwirft
+  // aber die gestagten Optionen beider Geräte, deshalb vorher merken und danach wieder setzen.
+  async _refreshRemote(d, force = false) {
+    if (!this._config.remote_check || this._ui.checking) return this._val(d.e.remote) !== 'off';
+    if (!force && Date.now() - (this._lastCheck || 0) < 60000) return this._val(d.e.remote) !== 'off';
+    this._lastCheck = Date.now();
+    const keys = ['program', 'temp', 'spin', 'level', 'heat'];
+    const snap = this._devs.map(x => ({ x, v: Object.fromEntries(keys.filter(k => this._ok(x.e[k])).map(k => [k, this._val(x.e[k])])) }));
+    const before = this._st(d.e.remote)?.last_updated;
+    this._ui.checking = true; this._key = null; this._render();
+    try {
+      await this._hass.callService('homeassistant', 'reload_config_entry', { entity_id: d.e.remote });
+      for (let t = 0; t < 60 && !(this._st(d.e.remote)?.last_updated !== before && this._ok(d.e.remote) && this._ok(d.e.program)); t++)
+        await new Promise(r => setTimeout(r, 500));
+      for (const { x, v } of snap) for (const k of keys) {
+        if (v[k] === undefined || this._val(x.e[k]) === v[k]) continue;
+        if (k === 'heat') await this._hass.callService('number', 'set_value', { entity_id: x.e[k], value: +v[k] });
+        else await this._hass.callService('select', 'select_option', { entity_id: x.e[k], option: v[k] });
+      }
+    } catch (err) {
+      this._toast(`Fernstart konnte nicht geprüft werden: ${err?.message || err}`);
+    } finally {
+      this._ui.checking = false; this._key = null; this._render();
+    }
+    return this._val(d.e.remote) !== 'off';
+  }
+
   async _onClick(e) {
     const b = e.composedPath().find(n => n instanceof HTMLElement && n.matches?.('button[data-a]'));
     if (!b || b.disabled) return;
@@ -429,9 +461,16 @@ class WaschkuecheCard extends HTMLElement {
       case 'sel': this._ui.sel = b.dataset.k; this._ui.all = false; this._ui.q = ''; this._ui.delay = 0; redraw(); break;
       case 'all': this._ui.all = !this._ui.all; this._ui.q = ''; this._ui.focusSearch = this._ui.all; redraw(); break;
       case 'delay': this._ui.delay = +v; redraw(); break;
-      case 'select': await this._call('select', 'select_option', { entity_id: id, option: v }); break;
+      case 'select':
+        if (await this._call('select', 'select_option', { entity_id: id, option: v })
+          && id === d.e.program && this._val(d.e.remote) === 'off') await this._refreshRemote(d);
+        break;
+      case 'recheck': await this._refreshRemote(d, true); break;
       case 'number': await this._call('number', 'set_value', { entity_id: id, value: +v }); break;
       case 'start': {
+        if (this._val(d.e.remote) === 'off' && !(await this._refreshRemote(d, true))) {
+          this._toast('Fernstart ist am Gerät noch nicht freigegeben.'); break;
+        }
         const delay = this._ok(d.e.delay) ? this._ui.delay : 0;
         if (this._ok(d.e.delay) && +this._val(d.e.delay) !== delay
           && !(await this._call('number', 'set_value', { entity_id: d.e.delay, value: delay }))) break;
